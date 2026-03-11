@@ -95,11 +95,15 @@ Traditional RAG assumes the answer exists fully-formed in a single chunk. Agenti
 
 Three architectural patterns have emerged as critical for compliance use cases:
 
-**Corrective RAG (CRAG):** After initial retrieval, a grading mechanism evaluates the relevance and sufficiency of retrieved documents. If quality is below threshold, it triggers a secondary, broader search — or falls back to web search. This directly addresses the "confidently wrong with bad context" problem.
+**Corrective RAG (CRAG)** ([arXiv 2401.15884](https://arxiv.org/abs/2401.15884)): After initial retrieval, a lightweight evaluator (fine-tuned T5-large) grades document quality into three categories: *Correct* (use directly), *Incorrect* (trigger secondary retrieval/web search), or *Ambiguous* (gather more context). A decompose-then-recompose algorithm selectively focuses on key information. CRAG is plug-and-play — it layers onto any existing RAG pipeline.
 
-**Self-RAG:** The model generates special "reflection tokens" that self-assess whether the retrieved context is sufficient, whether the generation is faithful to the context, and whether the output is useful. This enables the system to *abstain* when evidence is insufficient — critical for compliance.
+**Self-RAG:** The model generates special "reflection tokens" that self-assess whether the retrieved context is sufficient, whether the generation is faithful to the context, and whether the output is useful. This enables the system to *abstain* when evidence is insufficient — critical for compliance. If you can't fine-tune (API-only), structured prompting that asks the model to score relevance and support captures ~80% of the benefit.
 
 **Adaptive RAG:** Dynamically decides whether a query can be answered from internal knowledge, requires retrieval, or requires multi-hop reasoning. Avoids unnecessary retrieval for simple questions while escalating complex compliance queries to full multi-step pipelines.
+
+**In production, these combine:** Adaptive routing decides strategy → CRAG evaluates and corrects retrieval quality → Self-RAG validates the generation. A 2025 study showed adding a relevance evaluation gate plus query rewriting loop **cuts poor-answer rates roughly in half**. RAG-EVO (EPIA 2025) achieved 92.6% composite accuracy using evolutionary learning on top of these patterns.
+
+> Sources: [CRAG — arXiv](https://arxiv.org/abs/2401.15884), [DataCamp CRAG Implementation](https://www.datacamp.com/tutorial/corrective-rag-crag), [Let's Data Science — Self-Correcting Systems](https://www.letsdatascience.com/blog/agentic-rag-self-correcting-retrieval)
 
 ### 2.3 Multi-Agent Architecture for Compliance Verification
 
@@ -141,6 +145,10 @@ The state of the art for high-stakes compliance checking is a **multi-agent syst
     └──────────────────────────────────────────────────────┘
 ```
 
+**Empirical validation:** MA-RAG (arXiv, May 2025) demonstrated that even a LLaMA3-8B with multi-agent orchestration surpasses larger standalone LLMs, while Anthropic's own multi-agent research system outperformed single-agent Claude Opus 4 by 90.2%. Architecture matters more than model size.
+
+> Sources: [MA-RAG — arXiv 2505.20096](https://arxiv.org/abs/2505.20096), [Anthropic Multi-Agent Research System](https://www.anthropic.com/engineering/multi-agent-research-system), [RAG-Critic — ACL 2025](https://aclanthology.org/2025.acl-long.179/)
+
 **Why each agent matters:**
 
 - **Orchestrator:** Complex compliance requirements (e.g., "Does our data handling comply with GDPR Article 17?") decompose into multiple sub-questions ("Do we have a deletion mechanism?", "What's the retention policy?", "Is there a documented process for data subject requests?"). A single query cannot retrieve all of this.
@@ -160,6 +168,8 @@ The state of the art for high-stakes compliance checking is a **multi-agent syst
 For compliance, **query decomposition** is not optional — it's the single most important architectural decision. A customer requirement like:
 
 > "The system shall encrypt all personally identifiable information at rest and in transit, with key rotation every 90 days, and maintain audit logs of all access."
+
+A 2025 Haystack/Deepset study showed query decomposition alone **reduced retrieval-related hallucinations by 40%** in complex question scenarios — making it the single highest-ROI intervention.
 
 This is actually **four separate compliance checks**:
 1. Is PII encrypted at rest?
@@ -187,7 +197,17 @@ The most sophisticated compliance architectures combine RAG with knowledge graph
 
 In compliance, a system that says "I'm 60% confident we're compliant" is *infinitely* more useful than one that says "You're compliant" — even if the latter is right 95% of the time. The 5% silent failures can be catastrophic.
 
-### 3.2 Rubric-Based Assessment
+### 3.2 Existing Uncertainty Estimation Is Broken for RAG
+
+A critical ACL 2025 paper ([Soudani et al.](https://arxiv.org/abs/2505.07459)) demonstrated that **no existing uncertainty estimation method fully works in RAG settings**. Current methods generate low uncertainty values without considering whether the retrieved context is actually relevant to the query. They proposed five axioms a good UE method must satisfy, and showed none currently satisfy all of them.
+
+The most promising framework is **UniCR** — a decision-theoretic approach that collects heterogeneous uncertainty signals from LLMs and their toolchains, calibrates them into a probability of correctness, and enforces user-specified risk thresholds through a principled refusal rule. It lowers error rates by 12-25% on QA benchmarks and degrades gracefully for API-only (no logit access) scenarios.
+
+**Practical challenge:** Consistency-sampling (generating multiple responses to measure agreement) is the most accurate approach but introduces prohibitive computational costs and latency, making it non-viable for real-time compliance systems.
+
+> Sources: [ACL 2025 — Why UE Methods Fall Short in RAG](https://arxiv.org/abs/2505.07459), [UniCR Framework](https://arxiv.org/html/2509.01455), [KDD 2025 Survey on Uncertainty](https://arxiv.org/pdf/2503.15850)
+
+### 3.3 Rubric-Based Assessment
 
 The 2025 research landscape shows strong convergence on **analytic rubric-based evaluation**:
 
@@ -209,7 +229,20 @@ For each requirement:
 
 > Sources: [PLAWBENCH — Rubric-Based Legal LLM Evaluation](https://arxiv.org/pdf/2601.16669), [LeMAJ — Legal LLM-as-a-Judge](https://aclanthology.org/2025.nllp-1.23.pdf), [AutoRubric Framework](https://arxiv.org/html/2603.00077), [DeCE — EMNLP Industry 2025](https://aclanthology.org/2025.emnlp-industry.136.pdf)
 
-### 3.3 Sufficient Context Detection
+### 3.4 The Judge/Verifier Agent — Agent-as-a-Judge
+
+A single LLM evaluating its own output carries inherent biases. The 2025 evolution is **Agent-as-a-Judge** ([arXiv 2508.02994](https://arxiv.org/html/2508.02994v1)): an agent evaluates another agent by examining the **entire chain of actions and decisions**, not just the final answer. For compliance, this means:
+
+- The **RAG Triad** (TruLens/RAGAS) evaluates three dimensions: Context Relevance, Answer Faithfulness, and Answer Relevance
+- **Multi-agent evaluation** where agents play different roles (domain experts, critics, defenders) — emulating a panel of human auditors
+- **RAG-Critic** (ACL 2025) provides error-driven feedback that reshapes the solution flow, enabling self-correction before the final answer
+- **ARES** fine-tunes judge models on synthetic QA datasets (grounded, hallucinated, and poor responses) for scalable evaluation without manual annotation
+
+In production, judges are increasingly integrated into CI pipelines and real-time dashboards — making evaluation an always-on process rather than an offline step.
+
+> Sources: [Agent-as-a-Judge — arXiv](https://arxiv.org/html/2508.02994v1), [Mistral — Evaluating RAG with LLM Judge](https://mistral.ai/news/llm-as-rag-judge), [RAGAS — Align LLM as Judge](https://docs.ragas.io/en/stable/howtos/applications/align-llm-as-judge/)
+
+### 3.5 Sufficient Context Detection
 
 The Google ICLR 2025 work introduced a practical pattern: **before generating a compliance assessment, run a sufficiency check.** If the retrieved context is insufficient to answer the question, the system should either:
 1. Retrieve more context (trigger additional retrieval rounds)
@@ -218,7 +251,7 @@ The Google ICLR 2025 work introduced a practical pattern: **before generating a 
 
 This is the single most impactful mitigation against the confidence-hallucination paradox.
 
-### 3.4 Span-Level Verification
+### 3.6 Span-Level Verification
 
 The most promising 2025 approach for citation accuracy: **span-level verification**, where each generated claim is matched back against specific spans in the retrieved evidence and flagged if unsupported. This is the basis for the REFIND benchmark (SemEval 2025) and represents the shift from "does the answer feel right?" to "can every claim be traced to a source?"
 
@@ -329,6 +362,24 @@ You were sensing that:
 6. **Adversarial thinking is required** — you need a system that actively tries to find reasons you're NOT compliant, not just confirms compliance
 
 The research community calls this the shift from **"retrieval-augmented generation"** to **"retrieval-augmented reasoning"** — and the compliance domain is one of its most compelling applications.
+
+---
+
+---
+
+## Part 7: Implementation Frameworks
+
+| Framework | Best For | Key RAG Capabilities |
+|-----------|----------|---------------------|
+| **LangGraph** | Complex workflows with conditional branching | Graph-based state machines; built-in Adaptive/Corrective/Self-Reflective RAG patterns; ~6.17M monthly downloads |
+| **CrewAI** | Rapid prototyping of multi-agent systems | Role-based agent design; built-in query rewriting; native vector DB integrations |
+| **LlamaIndex** | Data-centric RAG pipelines | Strong indexing/retrieval abstractions; agent tool integration |
+| **AutoGen** (Microsoft) | Human-in-the-loop multi-agent conversations | Conversational agent patterns; code execution |
+| **Claude Agent SDK** (Anthropic) | Production multi-agent systems | Sub-agent spawning, tool use, extended thinking |
+
+Hybrid approaches (e.g., CrewAI agents within LangGraph nodes) are increasingly common in production.
+
+> Sources: [LangGraph Agentic RAG Docs](https://docs.langchain.com/oss/python/langgraph/agentic-rag), [Agentic RAG Survey — arXiv 2501.09136](https://arxiv.org/abs/2501.09136)
 
 ---
 
