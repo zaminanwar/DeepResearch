@@ -437,7 +437,92 @@ The research community calls this the shift from **"retrieval-augmented generati
 
 ---
 
-## Part 9: Implementation Frameworks
+## Part 9: Lessons from Open-Source Deep Research Systems
+
+Two prominent open-source "deep research" implementations were analyzed for patterns applicable to compliance RAG: [gpt-researcher](https://github.com/assafelovic/gpt-researcher) (Python, ~5k lines, production-grade) and [dzhng/deep-research](https://github.com/dzhng/deep-research) (TypeScript, ~450 lines, minimalist).
+
+### 9.1 `dzhng/deep-research` — The Recursive Tree Search Pattern
+
+**Architecture:** A remarkably simple recursive tree search controlled by two parameters: `breadth` (queries per level) and `depth` (recursion levels). At each level, it generates SERP queries, executes them concurrently, extracts "learnings," generates follow-up questions, and recurses with halved breadth.
+
+**Patterns worth adopting for compliance:**
+
+| Pattern | How It Works | Compliance Application |
+|---------|-------------|----------------------|
+| **Accumulated context across iterations** | All prior learnings are passed into each new query generation step, so the LLM generates increasingly specific queries | Each retrieval round for a compliance requirement builds on what was already found — avoiding redundant retrieval |
+| **Research goal propagation** | Each query carries a `researchGoal` field describing what the query should accomplish and what follow-ups to pursue | Carry the specific regulatory requirement being checked as context through all retrieval rounds |
+| **Structured LLM output via Zod schemas** | Uses `generateObject` with typed schemas to ensure machine-parseable responses at every step | Extend for compliance verdicts, evidence references, confidence scores — never rely on unstructured prose |
+| **Prompt trimming with token counting** | `trimPrompt` utility using tiktoken prevents context overflow | Essential for processing large regulatory documents that exceed context windows |
+| **Concurrency control** | `p-limit` manages parallel API calls | Practical necessity when checking multiple requirements simultaneously |
+
+**Critical gaps (confirmed by our research):**
+- **No per-finding source attribution** — learnings are plain strings with no back-reference to which URL or content produced them
+- **No negative evidence detection** — errors/timeouts are silently swallowed; no distinction between "searched and found nothing" and "didn't search"
+- **No conflict detection** — learnings from different sources are simply concatenated
+- **Purely mechanical depth control** — stops at a fixed depth, not when confidence is sufficient or all requirements are checked
+- **No audit trail** — only the final report is persisted; intermediate LLM calls, search results, and decision points are lost
+
+### 9.2 `gpt-researcher` — The Multi-Agent Supervisor Pattern
+
+**Architecture:** Two coexisting architectures. The core `GPTResearcher` is a single-agent pipeline with modular skill classes (ResearchConductor, ReportGenerator, ContextManager, BrowserManager, SourceCurator). The `multi_agents/` module uses **LangGraph StateGraph with a supervisor pattern** — a ChiefEditorAgent orchestrates Research, Editor, Writer, Reviewer, Reviser, Publisher, and Human agents with a conditional review loop.
+
+**Patterns worth adopting for compliance:**
+
+| Pattern | How It Works | Compliance Application |
+|---------|-------------|----------------------|
+| **LangGraph multi-agent with reviewer/reviser loop** | ChiefEditorAgent assigns tasks; Reviewer evaluates output; Reviser iterates until quality threshold met | Directly applicable to compliance review cycles — an assessor agent makes a finding, a reviewer agent challenges it, iterate until confident |
+| **Pluggable retriever architecture** | Supports 14+ retriever backends (Tavily, Google, Arxiv, Semantic Scholar, PubMed, MCP, etc.) running simultaneously | Swap in regulation-specific document stores; run multiple retrievers in parallel for higher recall |
+| **Embedding-based context compression** | LangChain's `ContextualCompressionRetriever` with similarity threshold (0.35) filters large result sets to relevant chunks | Filter large regulatory document sets to the passages actually relevant to each sub-requirement |
+| **Deep research recursive breadth/depth** | Spawns child `GPTResearcher` instances for sub-topics, each with its own retrieval cycle | Adapt for regulation section hierarchies — spawn a sub-researcher per regulatory section |
+| **Structured event logging** | `JSONResearchHandler` writes timestamped event logs (sub-query execution, content found, costs) to per-session JSON files | Foundation for audit trails — extend with immutability guarantees and claim-level traceability |
+| **Source curation via LLM** | Optional step that evaluates source relevance and credibility before including in context | For compliance, evaluate whether a retrieved document is the *authoritative* version of a regulation |
+
+**Critical gaps (same themes as deep-research):**
+- **No negative evidence tracking** — empty sub-query results are logged but never surfaced as findings
+- **No conflict detection** — the report prompt tells the LLM to "determine your own concrete and valid opinion," resolving conflicts silently rather than surfacing them
+- **Coverage tracking limited to URL deduplication** — no semantic coverage assessment of whether all aspects of a query have been addressed
+- **Citation is prompt-instructed, not structural** — the LLM is told to use APA-style links, but there's no verification that citations are accurate or that claims trace to specific chunks
+
+### 9.3 What Neither System Does (And What a Compliance System Must)
+
+Both systems share the same four critical gaps — which validates the findings in Parts 4 and 8 of this document:
+
+1. **Checklist-driven decomposition.** Both systems let the LLM improvise sub-queries. A compliance system must decompose deterministically: one sub-query per regulatory requirement, derived from the regulation itself, not from LLM creativity. The regulation *is* the query plan.
+
+2. **"Not found" as a first-class finding.** Both systems treat empty results as non-events. A compliance system must treat "searched for Requirement X, found no evidence" as the *most important* output — it's the gap that triggers remediation.
+
+3. **Explicit conflict surfacing.** Both systems let the LLM silently resolve contradictions. A compliance system must flag when Policy A says one thing and Policy B says another — because the *conflict itself* may be the compliance finding.
+
+4. **Claim-level provenance chains.** Both systems track URLs but not which specific passage produced which specific finding. A compliance system must link each compliance determination → the evidence that supports it → the exact passage in the exact document → the retrieval query that found it. This is the audit trail regulators will demand.
+
+### 9.4 Recommended Synthesis: What to Take from Each
+
+```
+From deep-research:          From gpt-researcher:           You must add:
+─────────────────────        ──────────────────────          ──────────────
+Recursive deepening          LangGraph supervisor pattern    Checklist-driven decomposition
+  with accumulated             with review/revise loop         (regulation = query plan)
+  context
+                             Pluggable multi-retriever       Negative evidence as
+Research goal propagation      architecture                    first-class output
+  per query
+                             Embedding-based context         Conflict detection and
+Zod-style structured           compression                    explicit surfacing
+  output schemas
+                             Source curation/credibility     Claim-level provenance
+Prompt trimming +              evaluation                     chains
+  token management
+                             JSON event logging              Per-requirement confidence
+Concurrency control            (foundation for audit)          calibration
+```
+
+The combination of deep-research's simplicity and gpt-researcher's production patterns, augmented with the four compliance-specific capabilities identified in this document, forms a strong architectural starting point.
+
+> Sources: [gpt-researcher](https://github.com/assafelovic/gpt-researcher), [dzhng/deep-research](https://github.com/dzhng/deep-research)
+
+---
+
+## Part 10: Implementation Frameworks
 
 | Framework | Best For | Key RAG Capabilities |
 |-----------|----------|---------------------|
@@ -453,4 +538,4 @@ Hybrid approaches (e.g., CrewAI agents within LangGraph nodes) are increasingly 
 
 ---
 
-*Research compiled March 2026 using parallel deep research agents specializing in: RAG failure modes and biases, agentic RAG architectures, and compliance-specific AI systems.*
+*Research compiled March 2026 using parallel deep research agents specializing in: RAG failure modes and biases, agentic RAG architectures, compliance-specific AI systems, and open-source deep research system analysis.*
