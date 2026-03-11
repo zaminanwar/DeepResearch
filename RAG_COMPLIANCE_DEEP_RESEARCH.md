@@ -266,14 +266,32 @@ This is perhaps the hardest problem in compliance RAG and the one you may be int
 1. **True negative:** The requirement genuinely isn't addressed in your corpus — you're non-compliant
 2. **Retrieval failure:** The requirement IS addressed but the retriever didn't find it (wrong embeddings, different terminology, information spread across multiple documents)
 
-Naive RAG cannot distinguish between these cases. Deep research agents address this through:
+Naive RAG cannot distinguish between these cases. This remains **the most critical unsolved problem in compliance RAG** — no paper directly addresses the formal problem of proving absence. Emerging approaches:
 
-- **Exhaustive search:** Instead of top-k retrieval, systematically search the corpus using multiple query formulations, synonyms, and related concepts
-- **Coverage tracking:** Maintain a map of which parts of the corpus have been searched and which haven't
-- **Terminology expansion:** Use the LLM to generate alternative ways the requirement might be expressed in the corpus
-- **Adversarial retrieval:** Specifically search for *contradictory* evidence — if you can't find evidence of compliance OR non-compliance, that's a stronger signal of a gap
+- **Requirement-driven enumeration:** Invert the typical RAG pattern. Start from the regulatory checklist, not the corpus. For each requirement, conduct an independent exhaustive search. Flag requirements where no evidence above a relevance threshold is found.
+- **Two-phase verification:** Phase 1 uses high-recall retrieval (exhaustive KNN or full-corpus scan) to find all possibly relevant passages. Phase 2 uses an LLM to evaluate whether any retrieved passage actually satisfies the requirement. If neither phase produces evidence, report "no evidence found" with a confidence score tied to retrieval coverage.
+- **Coverage tracking:** Maintain a map of which parts of the corpus have been searched. A "not found" result is far more credible when coverage is demonstrably 100% vs. when only top-k retrieval was used.
+- **Terminology expansion:** Use the LLM to generate alternative ways the requirement might be expressed in the corpus.
+- **Explicit "not found" categories in structured output:** Force the model to make an explicit absence claim (e.g., "addressed" / "partially addressed" / "not addressed") rather than simply omitting mention.
+- **Adversarial retrieval:** Specifically search for *contradictory* evidence — if you can't find evidence of compliance OR non-compliance, that's a stronger signal of a gap.
 
-### 4.2 The Closed-World vs Open-World Assumption
+**Why this is fundamentally hard:** LLMs have a well-documented bias toward generating affirmative answers ([arXiv:2508.06361](https://arxiv.org/html/2508.06361v1)). Standard RAG hallucination rates of ~12% in compliance contexts mean false evidence can be fabricated. And a [2026 paper on deterministic fuzzy triage](https://arxiv.org/html/2603.07390) argues that legal defensibility requires reproducible, rerunnable pipelines — non-deterministic LLM outputs complicate absence claims.
+
+> Sources: [LLM Deception on Benign Prompts](https://arxiv.org/html/2508.06361v1), [Deterministic Fuzzy Triage for Legal Compliance](https://arxiv.org/html/2603.07390)
+
+### 4.2 The Exhaustive Search Problem (Beyond Top-k)
+
+Standard RAG retrieves a limited number of top-ranked passages — this is **fundamentally inadequate for compliance**, where missing even one requirement is a compliance risk. As AI21's analysis notes, embedder-based retrieval is inherently probabilistic and optimized to find the single best-matching chunk rather than all relevant evidence.
+
+**Emerging solutions:**
+- **Per-document independent extraction:** Extract information from each document individually rather than generating from highest-ranked passages across documents, ensuring nothing is missed
+- **Structured RAG (S-RAG):** [AI21's approach](https://www.ai21.com/blog/structured-rag-enterprise-accuracy/) brings structure to retrieval, enabling precise analytical operations with up to **60% higher accuracy** on aggregative queries and near-perfect recall for exhaustive coverage
+- **Exhaustive KNN search:** Brute-force algorithms that scan the entire vector space, versus approximate nearest neighbor
+- **Hybrid SQL-like processing:** Combining document retrieval with structured data processing for precise counting, listing, and filtering
+
+> Sources: [AI21 Structured RAG](https://www.ai21.com/blog/structured-rag-enterprise-accuracy/), [Coheso — Robust RAG-Based Legal QA](https://www.coheso.ai/blogs/robust-rag-based-legal-question-answering-systems-for-knowledge-management)
+
+### 4.3 The Closed-World vs Open-World Assumption
 
 Traditional RAG operates under an **open-world assumption** — what's not found might still exist somewhere. Compliance checking requires a **closed-world assumption** — if it's not in the corpus, it doesn't exist (for compliance purposes). This fundamental mismatch requires explicit architectural handling.
 
@@ -281,7 +299,22 @@ Traditional RAG operates under an **open-world assumption** — what's not found
 
 ## Part 5: Enterprise Implementation Landscape (2025-2026)
 
-### 5.1 Commercial Platforms
+### 5.1 Real-World Performance Benchmarks
+
+- A study of **17 financial institutions** found AI-driven compliance assessment achieved 92.8% precision, 94.1% recall, and **76.3% reduction in assessment time** vs. manual review, using ensemble domain-specific LLMs fine-tuned on 1.7M+ annotated compliance documents
+- A February 2026 benchmarking study found **400+ court cases worldwide** have involved citations or statutes fabricated by AI tools; even with RAG, the best models achieve F1 scores **below 70%** on statutory questions
+- One system (STARA) achieved 83% accuracy, outperforming Westlaw AI and Lexis+ AI by 25 and 19 percentage points respectively
+- **Dual RAG architectures** (retrieval + verification) reduce hallucinations by over 90% vs. standard models
+
+> Sources: [Financial Services Compliance Study](https://journalwjaets.com/sites/default/files/fulltext_pdf/WJAETS-2025-0784.pdf), [Benchmarking Legal RAG — arXiv 2603.03300](https://arxiv.org/html/2603.03300)
+
+### 5.2 The IRAC Framework for Compliance Decomposition
+
+**HSE-Bench** (arXiv, May 2025) adapts the **IRAC framework** (Issue, Rule, Application, Conclusion) from legal studies to decompose compliance assessment into four canonical reasoning steps. This provides a principled way to structure agent workflows: one agent identifies the legal *issue*, another retrieves the applicable *rule*, a third *applies* the rule to the facts, and a fourth draws a *conclusion* with confidence scoring.
+
+> Source: [HSE-Bench — arXiv 2505.22959](https://arxiv.org/html/2505.22959)
+
+### 5.3 Commercial Platforms
 
 - **IBM watsonx** — "Chat with Documents" feature for grounding compliance responses in uploaded regulatory documents, with citation tracking. watsonx.governance provides compliance accelerators for EU AI Act, ISO 42001, NIST AI RMF.
 - **Relyance AI** — Automated compliance gap analysis mapping systems against ISO 27001, NIST, PCI, AI Act requirements
@@ -290,7 +323,7 @@ Traditional RAG operates under an **open-world assumption** — what's not found
 
 > Sources: [IBM watsonx Compliance](https://www.ibm.com/think/insights/enhancing-regulatory-compliance-ai-age), [Relyance AI](https://www.relyance.ai/solutions/compliance-gap-analysis-automated-control-validation), [Kodex AI](https://www.kodex-ai.com/gap-analysis)
 
-### 5.2 Key Trends
+### 5.4 Key Trends
 
 - **75% of enterprise apps** projected to use hybrid agentic-RAG architectures by 2026
 - **Traceability is the new differentiator** — RAG systems are judged not just by answer correctness but by provenance ("can it prove where the answer came from?")
@@ -300,7 +333,33 @@ Traditional RAG operates under an **open-world assumption** — what's not found
 
 ---
 
-## Part 6: What You Should Build
+## Part 6: Audit Trails and Explainability
+
+For regulated industries, the compliance AI system itself must be compliant. Key requirements:
+
+### Regulatory Mandates
+- **EU AI Act Article 19:** Providers of high-risk AI systems must keep automatically generated logs for at least six months
+- **ISO/IEC 42001:** Emphasizes continuous testing and documentation
+- **NIST AI RMF:** Requires documentation, monitoring records, and decision traceability
+- **SEC expanded record-keeping rules** for financial services
+
+### Agent Decision Records (ADRs)
+A new 2025 pattern: comprehensive logs documenting the reasoning process behind an AI agent's actions — the AI equivalent of architectural decision records in software engineering. Every retrieval decision, every re-query, every confidence assessment must be logged.
+
+### Best Practices
+1. **Design for auditability from day one** — retrofitting is expensive and incomplete
+2. **Automate compliance evidence collection** — manual checks don't scale
+3. **Make explainability meaningful** — not raw model internals, but feature importance summaries, rule traces, confidence indicators, and structured rationales
+4. **Codify policies as infrastructure** — use infrastructure-as-code so policy updates auto-propagate
+5. **Deploy real-time monitoring dashboards** — surface drift scores, audit-log completeness, and unresolved policy waivers
+
+The "governance tax" adds 20-30% to infrastructure costs but is non-negotiable for regulated deployments.
+
+> Sources: [Galileo — AI Agent Compliance](https://galileo.ai/blog/ai-agent-compliance-governance-audit-trails-risk-management), [ISACA — Auditing Agentic AI](https://www.isaca.org/resources/news-and-trends/industry-news/2025/the-growing-challenge-of-auditing-agentic-ai), [IBM watsonx.governance](https://www.ibm.com/products/watsonx-governance)
+
+---
+
+## Part 7: What You Should Build
 
 Given the state of the art, here's the architecture that addresses every concern you raised:
 
@@ -365,9 +424,20 @@ The research community calls this the shift from **"retrieval-augmented generati
 
 ---
 
+## Part 8: Open Problems and Research Gaps
+
+1. **Absence detection** remains the most critical unsolved problem — no robust method exists to prove something is NOT in a corpus
+2. **Confidence calibration** for legal/regulatory outputs lacks standardization (ACL 2025 showed no UE method satisfies all required axioms)
+3. **Exhaustive retrieval guarantees** are architecturally impossible with standard embedding-based RAG; hybrid approaches are needed
+4. **Cross-jurisdictional compliance** (handling conflicting regulations across jurisdictions) is barely addressed
+5. **Temporal compliance** (tracking how regulations evolve and when specific versions apply) needs more tooling
+6. **Adversarial robustness** — can manipulated documents fool the compliance system? Underexplored
+7. **Inter-document conflict resolution** — when policy A says one thing and policy B says another ([Madam-RAG, arXiv 2504.13079](https://arxiv.org/html/2504.13079v2) is early work here)
+8. **Deterministic reproducibility** — regulators may require rerunnable pipelines with identical outputs, which is at odds with LLM non-determinism
+
 ---
 
-## Part 7: Implementation Frameworks
+## Part 9: Implementation Frameworks
 
 | Framework | Best For | Key RAG Capabilities |
 |-----------|----------|---------------------|
